@@ -62,7 +62,7 @@ final class IntegrationTests: XCTestCase {
         XCTAssertTrue(output.contains("shell-marker"), "shell output was: \(output)")
 
         try await shell.resize(cols: 120, rows: 50)
-        await shell.close()
+        try await shell.close()
         let isClosed = await shell.isClosed
         XCTAssertTrue(isClosed)
 

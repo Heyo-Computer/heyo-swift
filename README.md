@@ -16,7 +16,7 @@ with the TypeScript (`@heyocomputer/sdk`) and Rust (`heyo-sdk`) SDKs.
 Add the package to your `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/heyo-computer/heyo-swift", from: "1.0.0")
+.package(url: "https://github.com/heyo-computer/heyo-swift", from: "0.1.1")
 ```
 
 ```swift
@@ -66,7 +66,7 @@ Task {
 
 try await shell.write("ls -la\n")
 try await shell.resize(cols: 100, rows: 30)
-await shell.close()   // graceful EOF; or shell.kill() to drop immediately
+try await shell.close()   // graceful EOF; or shell.kill() to drop immediately
 ```
 
 ### Databases
