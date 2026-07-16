@@ -180,4 +180,45 @@ final class UnitTests: XCTestCase {
         let local = HeyoClient.local()
         XCTAssertEqual(local.wsURL("/x").scheme, "ws")
     }
+
+    // MARK: - Transfer (receive) wire coding
+
+    func testTransferStatusDecodesDoneRow() throws {
+        let json = Data("""
+        {"receive_id":"rcv-1234abcd","bundle_id":"bnd-5678ef01",
+         "status":"done","restored_id":"sb-99","memory_restored":true,
+         "error":null,"bytes_received":1048576}
+        """.utf8)
+        let s = try JSONDecoder().decode(TransferReceiveStatus.self, from: json)
+        XCTAssertEqual(s.status, .done)
+        XCTAssertTrue(s.status.isTerminal)
+        XCTAssertEqual(s.restoredId, "sb-99")
+        XCTAssertEqual(s.memoryRestored, true)
+        XCTAssertEqual(s.bytesReceived, 1_048_576)
+    }
+
+    func testTransferStatusToleratesPartialPullingRow() throws {
+        // Mid-flight rows omit restored_id/memory_restored; bytes may be absent.
+        let json = Data(#"{"receive_id":"rcv-1","bundle_id":"bnd-1","status":"pulling"}"#.utf8)
+        let s = try JSONDecoder().decode(TransferReceiveStatus.self, from: json)
+        XCTAssertEqual(s.status, .pulling)
+        XCTAssertFalse(s.status.isTerminal)
+        XCTAssertNil(s.restoredId)
+        XCTAssertEqual(s.bytesReceived, 0)
+    }
+
+    func testTransferStatusMapsUnknownPhase() throws {
+        let json = Data(#"{"receive_id":"rcv-1","bundle_id":"bnd-1","status":"verifying"}"#.utf8)
+        let s = try JSONDecoder().decode(TransferReceiveStatus.self, from: json)
+        XCTAssertEqual(s.status, .unknown)
+    }
+
+    func testReceiveOptionsDefaults() {
+        let o = ReceiveOptions()
+        XCTAssertTrue(o.startAfter)
+        XCTAssertFalse(o.requireMemory)
+        XCTAssertNil(o.name)
+        XCTAssertNil(o.backend)
+        XCTAssertNil(o.relay)
+    }
 }

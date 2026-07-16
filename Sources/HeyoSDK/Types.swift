@@ -14,7 +14,7 @@ public enum SandboxDriver: String, Codable, Sendable {
 }
 
 public enum SandboxSize: String, Codable, Sendable {
-    case micro, mini, small, medium, large
+    case micro, mini, small, medium, large, xlarge
 }
 
 /// Lifecycle states the cloud reports. `provisioning` covers both queued and
