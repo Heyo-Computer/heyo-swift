@@ -67,6 +67,43 @@ public final class Sandbox: @unchecked Sendable {
         try await archiveDirImpl(localPath, options: options, clientOptions: clientOptions)
     }
 
+    /// Create a sandbox via the local heyvm API's native
+    /// `POST /sandboxes/from-archive` path. **Local heyvm API only** — pass
+    /// `HeyoClient.local()`-style `clientOptions`; the cloud does not serve this
+    /// route. When `s3ArchiveKey` is omitted the workspace starts empty.
+    ///
+    /// The returned instance works like any other ``Sandbox``: its instance
+    /// methods use the cloud-dialect compatibility routes, which the local
+    /// daemon also serves.
+    public static func createFromArchive(
+        _ options: SandboxFromArchiveOptions,
+        clientOptions: HeyoClientOptions = HeyoClientOptions()
+    ) async throws -> Sandbox {
+        let client = HeyoClient(clientOptions)
+        let body = JSONValue.object(droppingNil: [
+            "name": .string(options.name),
+            "image": .string(options.image),
+            "s3_archive_key": options.s3ArchiveKey.map(JSONValue.string),
+            "sandbox_path": options.sandboxPath.map(JSONValue.string),
+            "backend_type": options.driver.map(JSONValue.string),
+            "start_command": options.startCommand.map(JSONValue.string),
+            "working_directory": options.workingDirectory.map(JSONValue.string),
+            "env_vars": options.envVars.map { .object($0.mapValues(JSONValue.string)) },
+            "setup_hooks": options.setupHooks.map { .array($0.map(JSONValue.string)) },
+            "open_ports": options.openPorts.map { .array($0.map(JSONValue.int)) },
+            "ttl_seconds": options.ttlSeconds.map(JSONValue.int),
+            "size_class": options.sizeClass.map { .string($0.rawValue) },
+        ])
+        let created: CreateResponse = try await client.request(
+            "/sandboxes/from-archive", method: "POST", body: body)
+        let sandbox = Sandbox(client: client, sandboxId: created.id, initialInfo: nil)
+        let wait = options.waitForReady ?? defaultWaitForReady
+        if wait > 0 {
+            _ = try await sandbox.waitForReady(timeout: wait)
+        }
+        return sandbox
+    }
+
     /// List all deployed sandboxes the caller can see.
     public static func list(
         clientOptions: HeyoClientOptions = HeyoClientOptions()
@@ -188,6 +225,23 @@ public final class Sandbox: @unchecked Sendable {
             body: .object(["size_class": .string(sizeClass.rawValue)]))
     }
 
+    /// Grow the persistent workspace disk to `diskSizeGb` GiB.
+    ///
+    /// Grow-only — the cloud rejects a size at or below the current one — and
+    /// supported on Firecracker and KVM backends only. The sandbox is resized
+    /// offline, which invalidates any existing snapshot.
+    ///
+    /// Throws ``HeyoError/invalidArgument(_:)`` when `diskSizeGb` is outside the
+    /// server's accepted 1...250 GiB range.
+    public func resizeDisk(_ diskSizeGb: Int) async throws {
+        guard (1...250).contains(diskSizeGb) else {
+            throw HeyoError.invalidArgument("diskSizeGb must be an integer between 1 and 250 GiB")
+        }
+        try await client.send(
+            "/deployed-sandboxes/\(pathEscape(sandboxId))/resize",
+            body: .object(["disk_size_gb": .int(diskSizeGb)]))
+    }
+
     /// Cold-store the sandbox (frees compute, keeps state in S3).
     public func checkpoint() async throws {
         try await client.send("/deployed-sandboxes/\(pathEscape(sandboxId))/checkpoint")
@@ -244,6 +298,32 @@ public final class Sandbox: @unchecked Sendable {
             url: raw.url ?? "https://\(hostname)",
             port: raw.port,
             isPublic: raw.isPublic ?? true)
+    }
+
+    /// Fetch the sandbox's stdout/stderr log buffer. **Local heyvm API only** —
+    /// the cloud does not serve this route and returns
+    /// ``HeyoError/notFound(_:)``.
+    public func logs(_ options: SandboxLogsOptions = SandboxLogsOptions()) async throws -> SandboxLogs {
+        try await client.request(
+            "/sandboxes/\(pathEscape(sandboxId))/logs",
+            query: [
+                "limit": options.limit.map(String.init),
+                "offset": options.offset.map(String.init),
+                "source": options.source?.rawValue,
+                "level": options.level?.rawValue,
+            ])
+    }
+
+    /// Snapshot the sandbox's disk into a reusable image — bake an environment
+    /// once, then pass the returned `name` as the `image` of future creates.
+    ///
+    /// **Local heyvm API only.** The cloud's nearest equivalent is
+    /// ``checkpoint()``, which cold-stores rather than producing an image.
+    public func snapshotToImage(name: String) async throws -> SnapshotImageInfo {
+        try await client.request(
+            "/sandboxes/\(pathEscape(sandboxId))/snapshot-image",
+            method: "POST",
+            body: .object(["name": .string(name)]))
     }
 
     /// Open a persistent interactive shell. The returned ``ShellSession`` holds

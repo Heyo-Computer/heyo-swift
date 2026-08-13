@@ -72,6 +72,38 @@ public enum Daemons {
         return resp.connectionUrl
     }
 
+    /// Open an interactive shell on the daemon's **host machine** (not a
+    /// sandbox) — the terminal equivalent of SSHing into the box that runs
+    /// `heyvmd`.
+    ///
+    /// Unlike ``connectionTicket(_:clientOptions:)`` (a free, direct path onto a
+    /// sandbox), a host shell is a paid, gated resource routed through the cloud
+    /// so the gates and metering apply:
+    /// - the daemon must be started with `--allow-host-shell`;
+    /// - the host must be assigned to one of your networks (see
+    ///   ``Network/addHost(daemonId:deviceName:)``) — otherwise the cloud
+    ///   returns 403;
+    /// - your account must have a positive credit balance — otherwise 402;
+    /// - while the session is live it burns `host_shell_second` credits.
+    ///
+    /// Returns an open ``ShellSession`` with the same API as
+    /// ``Sandbox/shell(_:)``.
+    ///
+    /// - Parameters:
+    ///   - daemonId: The daemon whose host to open a shell on (`hd-…`).
+    ///   - options: PTY sizing / env / cwd / reconnect tuning.
+    public static func hostShell(
+        _ daemonId: String,
+        shell options: ShellOptions = ShellOptions(),
+        clientOptions: HeyoClientOptions = HeyoClientOptions()
+    ) async throws -> ShellSession {
+        let client = HeyoClient(clientOptions)
+        return try await ShellSession.open(
+            client: client,
+            path: "/me/daemons/\(pathEscape(daemonId))/host/shell-stream",
+            options: options)
+    }
+
     private struct SandboxesResponse: Decodable {
         let daemonId: String
         let daemonName: String?

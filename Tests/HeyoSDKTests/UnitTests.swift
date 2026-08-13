@@ -79,6 +79,99 @@ final class UnitTests: XCTestCase {
         XCTAssertEqual(try decode("something-new"), .unknown)
     }
 
+    // MARK: - SandboxInfo decoding
+
+    func testSandboxInfoDecodesDiskSize() throws {
+        let json = Data("""
+        {"id":"dep-1","name":"box","status":"running","image":"ubuntu:24.04",
+         "size_class":"small","disk_size_gb":32,"uptime_secs":10,
+         "is_deployed":true,"status_changed_at":"2026-01-01T00:00:00Z"}
+        """.utf8)
+        let info = try JSONDecoder().decode(SandboxInfo.self, from: json)
+        XCTAssertEqual(info.diskSizeGb, 32)
+        XCTAssertEqual(info.sizeClass, "small")
+    }
+
+    func testSandboxInfoToleratesMissingDiskSize() throws {
+        // Backends that don't report a workspace disk omit the field entirely;
+        // older cloud builds send it as null.
+        let base = Data("""
+        {"id":"dep-1","name":"box","status":"running","image":"ubuntu:24.04",
+         "uptime_secs":0,"status_changed_at":"2026-01-01T00:00:00Z"}
+        """.utf8)
+        XCTAssertNil(try JSONDecoder().decode(SandboxInfo.self, from: base).diskSizeGb)
+
+        let explicitNull = Data("""
+        {"id":"dep-1","name":"box","status":"running","image":"ubuntu:24.04",
+         "disk_size_gb":null,"uptime_secs":0,"status_changed_at":"2026-01-01T00:00:00Z"}
+        """.utf8)
+        XCTAssertNil(try JSONDecoder().decode(SandboxInfo.self, from: explicitNull).diskSizeGb)
+    }
+
+    // MARK: - Disk resize validation
+
+    /// The 1...250 GiB bound is enforced client-side so an out-of-range value
+    /// never reaches the cloud (which rejects it with the same range).
+    func testResizeDiskRejectsOutOfRange() async {
+        let sandbox = Sandbox.connect("dep-1", clientOptions: HeyoClientOptions(apiKey: "k"))
+        for bad in [0, -1, 251] {
+            do {
+                try await sandbox.resizeDisk(bad)
+                XCTFail("expected \(bad) GiB to be rejected")
+            } catch let HeyoError.invalidArgument(message) {
+                XCTAssertTrue(message.contains("250"), "unexpected message: \(message)")
+            } catch {
+                XCTFail("expected invalidArgument for \(bad), got \(error)")
+            }
+        }
+    }
+
+    // MARK: - Local-API payloads
+
+    func testSandboxLogsDecoding() throws {
+        let json = Data("""
+        {"logs":[{"timestamp":1735689600,"source":"stderr","level":"error","message":"boom"},
+                 {"timestamp":1735689601,"source":"stdout","message":"ok"}],
+         "total":2,"limit":50,"offset":0}
+        """.utf8)
+        let page = try JSONDecoder().decode(SandboxLogs.self, from: json)
+        XCTAssertEqual(page.total, 2)
+        XCTAssertEqual(page.limit, 50)
+        XCTAssertEqual(page.logs.count, 2)
+        XCTAssertEqual(page.logs[0].source, .stderr)
+        XCTAssertEqual(page.logs[0].level, "error")
+        XCTAssertEqual(page.logs[0].message, "boom")
+        // A line with no parsed level decodes to nil rather than throwing.
+        XCTAssertNil(page.logs[1].level)
+        XCTAssertEqual(page.logs[1].source, .stdout)
+    }
+
+    func testSandboxLogsToleratesEmptyPage() throws {
+        let page = try JSONDecoder().decode(SandboxLogs.self, from: Data("{}".utf8))
+        XCTAssertEqual(page.logs.count, 0)
+        XCTAssertEqual(page.total, 0)
+    }
+
+    func testSnapshotImageInfoDecoding() throws {
+        let json = Data("""
+        {"name":"baked","path":"/var/lib/heyvm/images/baked.qcow2",
+         "size_bytes":2147483648,"backend_type":"firecracker"}
+        """.utf8)
+        let image = try JSONDecoder().decode(SnapshotImageInfo.self, from: json)
+        XCTAssertEqual(image.name, "baked")
+        XCTAssertEqual(image.sizeBytes, 2_147_483_648)
+        XCTAssertEqual(image.backendType, "firecracker")
+    }
+
+    // MARK: - Network member kinds
+
+    func testNetworkMemberKindWireValues() {
+        XCTAssertEqual(NetworkMemberKind.host.rawValue, "host")
+        XCTAssertEqual(NetworkMemberKind.databaseLocal.rawValue, "database_local")
+        XCTAssertEqual(NetworkMemberKind.databaseCloud.rawValue, "database_cloud")
+        XCTAssertEqual(NetworkMemberKind(rawValue: "host"), .host)
+    }
+
     // MARK: - Error mapping
 
     func testValidateStatusMapping() {

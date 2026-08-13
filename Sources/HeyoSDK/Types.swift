@@ -63,6 +63,9 @@ public struct SandboxInfo: Codable, Sendable {
     public let startCommand: String?
     public let workingDirectory: String?
     public let sizeClass: String?
+    /// Effective Firecracker/KVM workspace disk size in GiB, when the backend
+    /// reports one.
+    public let diskSizeGb: Int?
     public let envVars: [String: String]?
     public let setupHooks: [String]?
     public let uptimeSecs: Int
@@ -77,6 +80,7 @@ public struct SandboxInfo: Codable, Sendable {
         case startCommand = "start_command"
         case workingDirectory = "working_directory"
         case sizeClass = "size_class"
+        case diskSizeGb = "disk_size_gb"
         case envVars = "env_vars"
         case setupHooks = "setup_hooks"
         case uptimeSecs = "uptime_secs"
@@ -96,6 +100,7 @@ public struct SandboxInfo: Codable, Sendable {
         startCommand = try c.decodeIfPresent(String.self, forKey: .startCommand)
         workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
         sizeClass = try c.decodeIfPresent(String.self, forKey: .sizeClass)
+        diskSizeGb = try c.decodeIfPresent(Int.self, forKey: .diskSizeGb)
         envVars = try c.decodeIfPresent([String: String].self, forKey: .envVars)
         setupHooks = try c.decodeIfPresent([String].self, forKey: .setupHooks)
         uptimeSecs = try c.decodeIfPresent(Int.self, forKey: .uptimeSecs) ?? 0
@@ -220,6 +225,165 @@ public struct SandboxCreateOptions: Sendable {
         self.setupHooks = setupHooks
         self.sizeClass = sizeClass
         self.daemonId = daemonId
+        self.waitForReady = waitForReady
+    }
+}
+
+// MARK: - Logs
+
+/// Which PTY stream a log line came from.
+public enum LogSource: String, Codable, Sendable {
+    case stdout, stderr
+}
+
+/// Severity as parsed from the log line, when one was present.
+public enum LogLevel: String, Codable, Sendable {
+    case debug, info, warning, error
+}
+
+/// Filters for ``Sandbox/logs(_:)``.
+public struct SandboxLogsOptions: Sendable {
+    /// Maximum entries returned. Server default applies when omitted.
+    public var limit: Int?
+    /// Entries to skip (for paging).
+    public var offset: Int?
+    /// Only one stream. Omit for both.
+    public var source: LogSource?
+    /// Only entries at this level.
+    public var level: LogLevel?
+
+    public init(
+        limit: Int? = nil,
+        offset: Int? = nil,
+        source: LogSource? = nil,
+        level: LogLevel? = nil
+    ) {
+        self.limit = limit
+        self.offset = offset
+        self.source = source
+        self.level = level
+    }
+}
+
+/// One sandbox log line.
+public struct SandboxLogEntry: Codable, Sendable {
+    /// Unix timestamp in seconds.
+    public let timestamp: Int
+    public let source: LogSource
+    /// Parsed level, or `nil` when the line carried none.
+    public let level: String?
+    public let message: String
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try c.decodeIfPresent(Int.self, forKey: .timestamp) ?? 0
+        source = try c.decodeIfPresent(LogSource.self, forKey: .source) ?? .stdout
+        level = try c.decodeIfPresent(String.self, forKey: .level)
+        message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
+    }
+}
+
+/// A page of log entries returned by ``Sandbox/logs(_:)``.
+public struct SandboxLogs: Codable, Sendable {
+    public let logs: [SandboxLogEntry]
+    /// Total entries available, before `limit`/`offset`.
+    public let total: Int
+    public let limit: Int
+    public let offset: Int
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        logs = try c.decodeIfPresent([SandboxLogEntry].self, forKey: .logs) ?? []
+        total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
+        limit = try c.decodeIfPresent(Int.self, forKey: .limit) ?? 0
+        offset = try c.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+    }
+}
+
+// MARK: - Snapshot images
+
+/// Result of ``Sandbox/snapshotToImage(name:)``.
+public struct SnapshotImageInfo: Codable, Sendable {
+    /// Validated image name (also the filename stem in the image directory).
+    public let name: String
+    /// Absolute host path of the written image file.
+    public let path: String
+    public let sizeBytes: Int
+    /// Backend the snapshot was taken from (`firecracker`, `kvm`, …).
+    public let backendType: String
+
+    enum CodingKeys: String, CodingKey {
+        case name, path
+        case sizeBytes = "size_bytes"
+        case backendType = "backend_type"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        sizeBytes = try c.decodeIfPresent(Int.self, forKey: .sizeBytes) ?? 0
+        backendType = try c.decodeIfPresent(String.self, forKey: .backendType) ?? ""
+    }
+}
+
+// MARK: - Local create-from-archive options
+
+/// Options for ``Sandbox/createFromArchive(_:clientOptions:)`` — the local heyvm
+/// API's native create path. When `s3ArchiveKey` is omitted the workspace starts
+/// empty.
+public struct SandboxFromArchiveOptions: Sendable {
+    public var name: String
+    /// Image name or slug, resolved by the local backend.
+    public var image: String
+    /// S3 key of an uploaded archive to extract into the workspace.
+    public var s3ArchiveKey: String?
+    /// Mount path of the workspace inside the VM. Default: `/workspace`.
+    public var sandboxPath: String?
+    /// Backend to create on (wire field `backend_type`). The local API accepts
+    /// more values than the cloud (`firecracker`, `libvirt`, `kvm`,
+    /// `apple_virt`, …) — see ``HeyoClient/capabilities()`` for what the host
+    /// supports, which is why this is a `String` rather than ``SandboxDriver``.
+    public var driver: String?
+    public var startCommand: String?
+    public var workingDirectory: String?
+    public var envVars: [String: String]?
+    public var setupHooks: [String]?
+    public var openPorts: [Int]?
+    /// TTL in seconds. Server default applies when omitted.
+    public var ttlSeconds: Int?
+    public var sizeClass: SandboxSize?
+    /// Maximum time `createFromArchive` waits for the sandbox to leave
+    /// `provisioning`. Default 5 minutes. Pass `0` to skip waiting.
+    public var waitForReady: TimeInterval?
+
+    public init(
+        name: String,
+        image: String,
+        s3ArchiveKey: String? = nil,
+        sandboxPath: String? = nil,
+        driver: String? = nil,
+        startCommand: String? = nil,
+        workingDirectory: String? = nil,
+        envVars: [String: String]? = nil,
+        setupHooks: [String]? = nil,
+        openPorts: [Int]? = nil,
+        ttlSeconds: Int? = nil,
+        sizeClass: SandboxSize? = nil,
+        waitForReady: TimeInterval? = nil
+    ) {
+        self.name = name
+        self.image = image
+        self.s3ArchiveKey = s3ArchiveKey
+        self.sandboxPath = sandboxPath
+        self.driver = driver
+        self.startCommand = startCommand
+        self.workingDirectory = workingDirectory
+        self.envVars = envVars
+        self.setupHooks = setupHooks
+        self.openPorts = openPorts
+        self.ttlSeconds = ttlSeconds
+        self.sizeClass = sizeClass
         self.waitForReady = waitForReady
     }
 }

@@ -7,6 +7,9 @@ public enum NetworkMemberKind: String, Codable, Sendable {
     case deployed
     case databaseLocal = "database_local"
     case databaseCloud = "database_cloud"
+    /// A daemon host machine (`sandboxRef` = the daemon's `hd-…` id). Assigning
+    /// a host to a network is what unlocks ``Daemons/hostShell(_:shell:clientOptions:)``.
+    case host
 }
 
 public struct NetworkInfo: Sendable {
@@ -147,10 +150,43 @@ private struct RawService: Decodable {
     }
 }
 
+/// Input to ``Network/registerService(_:clientOptions:)``.
+public struct ServiceRegistration: Sendable {
+    /// Service name (the `name` in `name:port`).
+    public var name: String
+    public var sandboxKind: NetworkMemberKind
+    /// Sandbox id (local) or deployment id (deployed) backing the service.
+    public var sandboxRef: String
+    public var port: Int
+    /// Defaults server-side to `tcp` when omitted.
+    public var protocolName: String?
+    /// Existing `heyo://` ticket, when the caller already runs a live route.
+    public var connectionUrl: String?
+
+    public init(
+        name: String,
+        sandboxKind: NetworkMemberKind,
+        sandboxRef: String,
+        port: Int,
+        protocolName: String? = nil,
+        connectionUrl: String? = nil
+    ) {
+        self.name = name
+        self.sandboxKind = sandboxKind
+        self.sandboxRef = sandboxRef
+        self.port = port
+        self.protocolName = protocolName
+        self.connectionUrl = connectionUrl
+    }
+}
+
 /// Result of dialing a service: a live route to it.
 public struct ServiceRoute: Sendable {
+    /// `name:port` address that was dialed.
     public let address: String
+    /// Transport — `iroh_tcp_proxy`.
     public let transport: String
+    /// `heyo://` ticket for the live route.
     public let connectionUrl: String
 }
 
@@ -251,6 +287,21 @@ public final class Network: @unchecked Sendable {
         return raw.resolved
     }
 
+    /// Assign a daemon **host** to this network so its owner can open a host
+    /// shell on it (``Daemons/hostShell(_:shell:clientOptions:)``). Convenience
+    /// over ``addMember(_:)`` with ``NetworkMemberKind/host``.
+    @discardableResult
+    public func addHost(daemonId: String, deviceName: String? = nil) async throws -> NetworkMember {
+        try await addMember(
+            NetworkMemberRegistration(
+                sandboxKind: .host, sandboxRef: daemonId, deviceName: deviceName))
+    }
+
+    /// Remove a daemon host from this network, revoking host-shell access.
+    public func removeHost(daemonId: String) async throws {
+        try await removeMember(sandboxKind: .host, sandboxRef: daemonId)
+    }
+
     public func removeMember(sandboxKind: NetworkMemberKind, sandboxRef: String) async throws {
         try await client.send(
             "/networks/\(pathEscape(id))/members/\(pathEscape(sandboxKind.rawValue))/\(pathEscape(sandboxRef))",
@@ -264,6 +315,52 @@ public final class Network: @unchecked Sendable {
         let client = HeyoClient(clientOptions)
         let raw: [RawService] = try await client.request("/networks/me/services")
         return raw.map(\.resolved)
+    }
+
+    /// `POST /networks/me/services` — register a service in the caller's default
+    /// network so peers can resolve it by `name:port`.
+    @discardableResult
+    public static func registerService(
+        _ registration: ServiceRegistration,
+        clientOptions: HeyoClientOptions = HeyoClientOptions()
+    ) async throws -> NetworkService {
+        let client = HeyoClient(clientOptions)
+        let body = JSONValue.object(droppingNil: [
+            "name": .string(registration.name),
+            "sandbox_kind": .string(registration.sandboxKind.rawValue),
+            "sandbox_ref": .string(registration.sandboxRef),
+            "port": .int(registration.port),
+            "protocol": registration.protocolName.map(JSONValue.string),
+            "connection_url": registration.connectionUrl.map(JSONValue.string),
+        ])
+        let raw: RawService = try await client.request(
+            "/networks/me/services", method: "POST", body: body)
+        return raw.resolved
+    }
+
+    /// `GET /networks/me/services/{name}/{port}` — look up a single registered
+    /// service. Unlike ``dialService(name:port:clientOptions:)`` this only reads
+    /// the registration; it does not require a live route.
+    public static func resolveService(
+        name: String,
+        port: Int,
+        clientOptions: HeyoClientOptions = HeyoClientOptions()
+    ) async throws -> NetworkService {
+        let client = HeyoClient(clientOptions)
+        let raw: RawService = try await client.request(
+            "/networks/me/services/\(pathEscape(name))/\(port)")
+        return raw.resolved
+    }
+
+    /// `DELETE /networks/me/services/{name}/{port}` — deregister a service.
+    public static func removeService(
+        name: String,
+        port: Int,
+        clientOptions: HeyoClientOptions = HeyoClientOptions()
+    ) async throws {
+        let client = HeyoClient(clientOptions)
+        try await client.send(
+            "/networks/me/services/\(pathEscape(name))/\(port)", method: "DELETE")
     }
 
     /// Resolve a service to a live iroh route. Throws a 409 when the service has

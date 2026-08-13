@@ -113,8 +113,7 @@ public actor ShellSession {
     private var ackTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
 
-    private init(client: HeyoClient, sandboxId: String, options: ShellOptions) {
-        let path = "/deployed-sandboxes/\(pathEscape(sandboxId))/shell-stream"
+    private init(client: HeyoClient, path: String, options: ShellOptions) {
         self.url = client.wsURL(path)
         // The cloud authenticates the WS upgrade via the `Authorization` header
         // (matching the Rust SDK). URLSession sends URLRequest headers on the
@@ -133,13 +132,28 @@ public actor ShellSession {
         self.eventsCont = ec
     }
 
-    /// Open and wait for the first `ready` frame.
+    /// Open a shell on a deployed sandbox and wait for the first `ready` frame.
     static func open(
         client: HeyoClient,
         sandboxId: String,
         options: ShellOptions
     ) async throws -> ShellSession {
-        let session = ShellSession(client: client, sandboxId: sandboxId, options: options)
+        try await open(
+            client: client,
+            path: "/deployed-sandboxes/\(pathEscape(sandboxId))/shell-stream",
+            options: options)
+    }
+
+    /// Open a shell against an arbitrary `shell-stream` route and wait for the
+    /// first `ready` frame. Used by ``Daemons/hostShell(_:shell:clientOptions:)``
+    /// to target a daemon's host machine instead of a sandbox; the wire protocol
+    /// is identical either way.
+    static func open(
+        client: HeyoClient,
+        path: String,
+        options: ShellOptions
+    ) async throws -> ShellSession {
+        let session = ShellSession(client: client, path: path, options: options)
         try await session.start()
         return session
     }

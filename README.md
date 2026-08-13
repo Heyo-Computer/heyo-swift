@@ -99,6 +99,41 @@ _ = try await net.addMember(.init(sandboxKind: .deployed, sandboxRef: sandbox.sa
 let daemons = try await Daemons.list()
 ```
 
+### Growing the workspace disk
+
+`resize` changes the compute size class; `resizeDisk` grows the persistent
+workspace disk. They are separate calls — the cloud accepts exactly one of
+`size_class` / `disk_size_gb` per request.
+
+```swift
+try await sandbox.resize(.large)      // compute
+try await sandbox.resizeDisk(64)      // workspace disk, GiB
+
+let info = try await sandbox.getInfo()
+print(info.diskSizeGb ?? 0)
+```
+
+Grow-only, Firecracker/KVM backends only, and 1...250 GiB (validated
+client-side). The sandbox is resized offline, which invalidates any snapshot.
+
+### Host shell
+
+`Daemons.hostShell` opens a shell on the machine running `heyvmd` rather than on
+a sandbox — the terminal equivalent of SSHing into the box. Assign the host to
+one of your networks first; that membership is what unlocks access.
+
+```swift
+let net = try await Network.default()
+try await net.addHost(daemonId: "hd-…", deviceName: "studio")
+
+let shell = try await Daemons.hostShell("hd-…", shell: .init(cols: 120, rows: 40))
+```
+
+Unlike a sandbox shell this is paid and gated: the daemon must run with
+`--allow-host-shell`, the host must be a network member (else 403), and the
+account needs a positive credit balance (else 402). Live sessions accrue
+`host_shell_second` usage.
+
 ## Local daemon
 
 ```swift
